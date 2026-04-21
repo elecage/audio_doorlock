@@ -1,3 +1,4 @@
+#include "battery_monitor.h"
 #include "servo_lock.h"
 
 #include "esp_check.h"
@@ -16,9 +17,13 @@
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <app/clusters/door-lock-server/door-lock-server.h>
+#include <app-common/zap-generated/cluster-enums.h>
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <platform/CHIPDeviceLayer.h>
+
+#include <algorithm>
+#include <cstring>
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -39,6 +44,10 @@ constexpr uint32_t kCommissioningWindowTimeoutSeconds = 300;
 // 스위치가 켜지면 즉시 열고, 이 시간 뒤 자동으로 다시 잠급니다.
 constexpr uint64_t kVoiceTriggerRelockDelayUs = 5ULL * 1000ULL * 1000ULL;
 
+// 배터리 상태는 너무 자주 바뀌는 값이 아니므로 60초마다 측정합니다.
+// 부팅 직후에는 Matter stack 시작 후 한 번 즉시 측정하도록 별도 ScheduleWork를 사용합니다.
+constexpr uint64_t kBatteryMonitorIntervalUs = 60ULL * 1000ULL * 1000ULL;
+
 // Matter Door Lock cluster의 LockState 값을 애플리케이션에서 다루기 쉽게 표현한 enum입니다.
 // 숫자 값은 Matter Door Lock specification의 LockState enum 값과 맞춰 둡니다.
 enum class LockState : uint8_t {
@@ -53,6 +62,9 @@ enum class LockState : uint8_t {
 // 이 객체는 PWM만 담당하고, Matter 네트워크나 endpoint 상태는 아래 전역 값들이 담당합니다.
 ServoLock g_servo_lock;
 
+// ADC로 배터리 전압을 읽고 퍼센트/저전압 상태로 변환하는 객체입니다.
+BatteryMonitor g_battery_monitor;
+
 // Door Lock endpoint id입니다.
 // esp-matter가 endpoint를 생성한 뒤 실제 id를 할당하므로, 생성 후 저장해 둡니다.
 uint16_t g_lock_endpoint_id = 0;
@@ -63,6 +75,124 @@ uint16_t g_voice_trigger_endpoint_id = 0;
 
 // 음성 트리거로 문을 열었을 때 5초 뒤 다시 잠그기 위한 one-shot 타이머입니다.
 esp_timer_handle_t g_auto_relock_timer = nullptr;
+
+// 주기적으로 배터리 상태를 읽기 위한 타이머입니다.
+esp_timer_handle_t g_battery_monitor_timer = nullptr;
+
+uint8_t percent_to_matter_half_percent(uint8_t percent)
+{
+    // Matter Power Source의 BatPercentRemaining은 0.5% 단위라서 100%가 200입니다.
+    return static_cast<uint8_t>(std::min<unsigned>(percent * 2U, 200U));
+}
+
+uint8_t charge_level_for_sample(const BatterySample &sample)
+{
+    if (sample.critical) {
+        return static_cast<uint8_t>(PowerSource::BatChargeLevelEnum::kCritical);
+    }
+    if (sample.low) {
+        return static_cast<uint8_t>(PowerSource::BatChargeLevelEnum::kWarning);
+    }
+    return static_cast<uint8_t>(PowerSource::BatChargeLevelEnum::kOk);
+}
+
+esp_err_t update_battery_power_source_attributes(const BatterySample &sample)
+{
+    // 루트 endpoint(0)에 Power Source cluster를 붙여 장치 전체의 배터리 상태를 알립니다.
+    constexpr uint16_t kRootEndpointId = 0;
+
+    esp_matter_attr_val_t voltage = esp_matter_nullable_uint32(nullable<uint32_t>(sample.battery_mv));
+    esp_err_t err = attribute::update(kRootEndpointId, PowerSource::Id,
+                                      PowerSource::Attributes::BatVoltage::Id, &voltage);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    esp_matter_attr_val_t percent =
+        esp_matter_nullable_uint8(nullable<uint8_t>(percent_to_matter_half_percent(sample.percent_remaining)));
+    err = attribute::update(kRootEndpointId, PowerSource::Id,
+                            PowerSource::Attributes::BatPercentRemaining::Id, &percent);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    esp_matter_attr_val_t charge_level = esp_matter_enum8(charge_level_for_sample(sample));
+    err = attribute::update(kRootEndpointId, PowerSource::Id,
+                            PowerSource::Attributes::BatChargeLevel::Id, &charge_level);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    // Critical 상태에서는 배터리 교체/충전이 필요한 것으로 표시합니다.
+    esp_matter_attr_val_t replacement_needed = esp_matter_bool(sample.critical);
+    err = attribute::update(kRootEndpointId, PowerSource::Id,
+                            PowerSource::Attributes::BatReplacementNeeded::Id, &replacement_needed);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    esp_matter_attr_val_t present = esp_matter_bool(true);
+    return attribute::update(kRootEndpointId, PowerSource::Id,
+                             PowerSource::Attributes::BatPresent::Id, &present);
+}
+
+void battery_monitor_work(intptr_t)
+{
+    BatterySample sample = {};
+    esp_err_t err = g_battery_monitor.read(sample);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to read battery state: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = update_battery_power_source_attributes(sample);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to update Matter battery state: %s", esp_err_to_name(err));
+        return;
+    }
+
+    if (sample.critical) {
+        ESP_LOGW(TAG, "Battery critical: %lumV (%u%%)",
+                 static_cast<unsigned long>(sample.battery_mv), sample.percent_remaining);
+    } else if (sample.low) {
+        ESP_LOGW(TAG, "Battery low: %lumV (%u%%)",
+                 static_cast<unsigned long>(sample.battery_mv), sample.percent_remaining);
+    }
+}
+
+void battery_monitor_timer_cb(void *)
+{
+    // Matter attribute update는 CHIP platform work queue에서 수행합니다.
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(battery_monitor_work, 0);
+}
+
+esp_err_t add_battery_power_source_cluster(endpoint_t *root_endpoint)
+{
+    cluster::power_source::config_t power_source_config;
+    power_source_config.status = static_cast<uint8_t>(PowerSource::PowerSourceStatusEnum::kActive);
+    power_source_config.order = 0;
+    strncpy(power_source_config.description, "Door lock battery",
+            sizeof(power_source_config.description) - 1);
+    power_source_config.feature_flags = cluster::power_source::feature::battery::get_id();
+    power_source_config.features.battery.bat_charge_level =
+        static_cast<uint8_t>(PowerSource::BatChargeLevelEnum::kOk);
+    power_source_config.features.battery.bat_replacement_needed = false;
+    power_source_config.features.battery.bat_replaceability =
+        static_cast<uint8_t>(PowerSource::BatReplaceabilityEnum::kUserReplaceable);
+
+    cluster_t *power_source_cluster =
+        cluster::power_source::create(root_endpoint, &power_source_config, CLUSTER_FLAG_SERVER);
+    ESP_RETURN_ON_FALSE(power_source_cluster != nullptr, ESP_FAIL, TAG,
+                        "Failed to create Power Source cluster");
+
+    cluster::power_source::attribute::create_bat_voltage(power_source_cluster,
+                                                         nullable<uint32_t>(), 0, 0xFFFF);
+    cluster::power_source::attribute::create_bat_percent_remaining(power_source_cluster,
+                                                                   nullable<uint8_t>(), 0, 200);
+    cluster::power_source::attribute::create_bat_present(power_source_cluster, true);
+
+    return ESP_OK;
+}
 
 void open_commissioning_window_if_needed()
 {
@@ -536,6 +666,10 @@ extern "C" void app_main()
     // 하드웨어 배선과 전원이 맞는지 초기 로그/동작으로 확인할 수 있습니다.
     ESP_ERROR_CHECK(g_servo_lock.init());
 
+    // 배터리 모니터링용 ADC를 초기화합니다.
+    // 실제 배터리 전압은 분압 회로를 통해 GPIO3 ADC 입력으로 들어온다고 가정합니다.
+    ESP_ERROR_CHECK(g_battery_monitor.init());
+
     // 보조 음성 트리거가 켜졌을 때 5초 뒤 자동 잠금을 수행할 타이머를 생성합니다.
     // 실제 시작은 handle_voice_trigger(true)에서 esp_timer_start_once()로 합니다.
     const esp_timer_create_args_t auto_relock_timer_args = {
@@ -547,12 +681,25 @@ extern "C" void app_main()
     };
     ESP_ERROR_CHECK(esp_timer_create(&auto_relock_timer_args, &g_auto_relock_timer));
 
+    const esp_timer_create_args_t battery_monitor_timer_args = {
+        .callback = &battery_monitor_timer_cb,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "battery_mon",
+        .skip_unhandled_events = true,
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&battery_monitor_timer_args, &g_battery_monitor_timer));
+
     // Matter node는 여러 endpoint를 담는 루트 객체입니다.
     // app_attribute_update_cb는 attribute 변경 시 호출되고,
     // app_identification_cb는 Identify cluster 동작 시 호출됩니다.
     node::config_t node_config;
     node_t *node = node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ESP_ERROR_CHECK(node == nullptr ? ESP_FAIL : ESP_OK);
+
+    endpoint_t *root_endpoint = endpoint::get(node, 0);
+    ESP_ERROR_CHECK(root_endpoint == nullptr ? ESP_FAIL : ESP_OK);
+    ESP_ERROR_CHECK(add_battery_power_source_cluster(root_endpoint));
 
     // 표준 Door Lock endpoint 설정입니다.
     // 초기 상태는 Locked로 두고, 물리 액추에이터가 있는 도어락임을 actuator_enabled로 표시합니다.
@@ -609,4 +756,7 @@ extern "C" void app_main()
     // Matter stack 시작 직후, 아직 fabric이 없으면 commissioning window를 열도록 예약합니다.
     // 이미 Google Home에 등록된 장치라면 open_commissioning_window_if_needed()에서 아무 일도 하지 않습니다.
     chip::DeviceLayer::PlatformMgr().ScheduleWork(open_commissioning_window_work, 0);
+
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(battery_monitor_work, 0);
+    ESP_ERROR_CHECK(esp_timer_start_periodic(g_battery_monitor_timer, kBatteryMonitorIntervalUs));
 }

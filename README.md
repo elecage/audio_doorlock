@@ -17,7 +17,14 @@ Google Assistant/Nest Mini blocks voice unlock commands for real Door Lock devic
 | VCC | External 5 V supply |
 | GND | Common GND with ESP32-C3 |
 
+| Battery Monitor | ESP32-C3 Super Mini |
+| --- | --- |
+| Divider midpoint | GPIO3 |
+| Divider top | Battery + through 100 kOhm |
+| Divider bottom | GND through 100 kOhm |
+
 Do not power the servo directly from the ESP32-C3 3.3 V pin. Even small servos such as SG90 can draw enough peak current to reset the board.
+The battery monitor assumes a 1-cell Li-ion/LiPo battery and a 1:1 voltage divider. Adjust the constants in [main/battery_monitor.cpp](main/battery_monitor.cpp) if you use a different battery pack, ADC pin, or resistor ratio.
 
 ## Features
 
@@ -28,6 +35,8 @@ Do not power the servo directly from the ESP32-C3 3.3 V pin. Even small servos s
 - Servo PWM: LEDC low-speed mode, 50 Hz
 - Servo signal pin: GPIO4
 - Auto-relock delay for voice trigger: 5 seconds
+- Battery monitor: ADC on GPIO3, Matter Power Source cluster
+- Low battery thresholds: warning at 3.5 V, critical at 3.3 V
 
 ## Servo Calibration
 
@@ -44,6 +53,23 @@ Current pulse widths:
 
 - Locked: about 666 us
 - Unlocked: about 1666 us
+
+## Battery Monitoring
+
+Battery state is exposed through the Matter Power Source cluster on the root endpoint.
+The firmware periodically measures the divided battery voltage on GPIO3, updates
+`BatVoltage`, `BatPercentRemaining`, `BatChargeLevel`, and sets
+`BatReplacementNeeded` when the battery reaches the critical threshold.
+
+The default voltage-to-percent mapping is linear from 3.3 V to 4.2 V for a single
+Li-ion/LiPo cell:
+
+- 4.2 V: 100%
+- 3.5 V: warning
+- 3.3 V: critical / replacement needed
+
+Because this changes the Matter data model, delete and re-pair the device in
+Google Home after flashing this firmware if the device was already commissioned.
 
 ## Build and Flash
 
@@ -200,7 +226,14 @@ Google Assistant/Nest Mini는 보안상의 이유로 실제 Door Lock 기기의 
 | VCC | 외부 5 V 전원 |
 | GND | ESP32-C3와 공통 GND |
 
+| 배터리 모니터 | ESP32-C3 Super Mini |
+| --- | --- |
+| 분압 중간점 | GPIO3 |
+| 분압 상단 | 배터리 + 에서 100 kOhm 경유 |
+| 분압 하단 | GND로 100 kOhm 경유 |
+
 서보를 ESP32-C3의 3.3 V 핀에서 직접 구동하지 마세요. SG90 같은 소형 서보도 순간 전류가 커서 보드가 리셋될 수 있습니다.
+배터리 모니터는 1셀 Li-ion/LiPo 배터리와 1:1 분압 회로를 기본값으로 가정합니다. 다른 배터리 팩, ADC 핀, 저항 비율을 사용한다면 [main/battery_monitor.cpp](main/battery_monitor.cpp)의 상수를 조정하세요.
 
 ## 기능
 
@@ -211,6 +244,8 @@ Google Assistant/Nest Mini는 보안상의 이유로 실제 Door Lock 기기의 
 - 서보 PWM: LEDC low-speed mode, 50 Hz
 - 서보 신호 핀: GPIO4
 - 음성 트리거 자동 재잠금 지연: 5초
+- 배터리 모니터: GPIO3 ADC, Matter Power Source cluster
+- 배터리 부족 기준: 3.5 V에서 경고, 3.3 V에서 심각
 
 ## 서보 보정
 
@@ -227,6 +262,23 @@ constexpr int kMaxPulseUs = 2500;
 
 - 잠김: 약 666 us
 - 열림: 약 1666 us
+
+## 배터리 모니터링
+
+배터리 상태는 루트 endpoint의 Matter Power Source cluster로 노출됩니다.
+펌웨어는 GPIO3으로 들어오는 분압된 배터리 전압을 주기적으로 측정하고
+`BatVoltage`, `BatPercentRemaining`, `BatChargeLevel`을 갱신합니다.
+배터리가 심각 단계에 도달하면 `BatReplacementNeeded`도 켜서 교체 또는 충전이
+필요한 상태로 표시합니다.
+
+기본 전압-퍼센트 변환은 1셀 Li-ion/LiPo 기준으로 3.3 V부터 4.2 V까지 선형으로 계산합니다.
+
+- 4.2 V: 100%
+- 3.5 V: 경고
+- 3.3 V: 심각 / 교체 필요
+
+이 기능은 Matter data model을 바꾸므로, 이미 Google Home에 페어링된 장치라면
+펌웨어 업로드 후 기존 장치를 삭제하고 다시 페어링하세요.
 
 ## 빌드 및 업로드
 
