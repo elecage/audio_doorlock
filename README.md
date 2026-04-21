@@ -111,3 +111,119 @@ This is a development prototype. Before using it on a real door, review manual o
 - [Espressif ESP-Matter component registry](https://components.espressif.com/components/espressif/esp_matter)
 - [ESP-IDF LEDC for ESP32-C3](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/peripherals/ledc.html)
 - [Google Home Matter hub requirements](https://support.google.com/googlenest/answer/12391458)
+
+---
+
+# ESP32-C3 Matter 서보 도어락
+
+ESP32-C3 Super Mini를 Wi-Fi Matter 도어락으로 만들고, RC 서보모터를 PWM으로 구동하는 ESP-IDF 프로젝트입니다.
+
+이 펌웨어는 두 개의 Matter endpoint를 제공합니다.
+
+- Google Home 앱 제어를 위한 표준 Door Lock endpoint
+- Google Assistant 음성 트리거로 문을 열기 위한 보조 On/Off Plug-in Unit endpoint
+
+Google Assistant/Nest Mini는 보안상의 이유로 실제 Door Lock 기기의 음성 잠금해제를 차단합니다. 그래서 보조 스위치를 Google Home에서 예를 들어 `현관문 버튼` 같은 이름으로 바꾼 뒤, 순간 열림 트리거로 사용할 수 있습니다. 스위치가 켜지면 서보가 열림 위치로 이동하고, 5초 뒤 자동으로 잠김 위치로 돌아갑니다.
+
+## 하드웨어
+
+| RC Servo | ESP32-C3 Super Mini |
+| --- | --- |
+| Signal | GPIO4 |
+| VCC | 외부 5 V 전원 |
+| GND | ESP32-C3와 공통 GND |
+
+서보를 ESP32-C3의 3.3 V 핀에서 직접 구동하지 마세요. SG90 같은 소형 서보도 순간 전류가 커서 보드가 리셋될 수 있습니다.
+
+## 기능
+
+- 대상 보드: ESP32-C3
+- Matter 기기 타입: Door Lock
+- 보조 음성 트리거: On/Off Plug-in Unit
+- 테스트한 Matter 허브: Google Nest Mini 2세대 + Google Home
+- 서보 PWM: LEDC low-speed mode, 50 Hz
+- 서보 신호 핀: GPIO4
+- 음성 트리거 자동 재잠금 지연: 5초
+
+## 서보 보정
+
+실제 잠금 장치에 맞게 [main/servo_lock.cpp](main/servo_lock.cpp)의 값을 조정하세요.
+
+```cpp
+constexpr int kLockedAngle = 15;
+constexpr int kUnlockedAngle = 105;
+constexpr int kMinPulseUs = 500;
+constexpr int kMaxPulseUs = 2500;
+```
+
+현재 펄스 폭은 다음과 같습니다.
+
+- 잠김: 약 666 us
+- 열림: 약 1666 us
+
+## 빌드 및 업로드
+
+이 프로젝트는 ESP-IDF v5.4.1과 `espressif/esp_matter` managed component를 사용합니다.
+
+```powershell
+idf.py set-target esp32c3
+idf.py build
+idf.py -p COM10 flash monitor
+```
+
+## Google Home 페어링
+
+새로 플래시했거나 NVS를 지운 뒤에는 장치가 Matter commissioning window를 열고 BLE에서 다음 이름으로 광고합니다.
+
+```text
+MATTER-3840
+```
+
+Google Home에서 새 Matter 기기를 추가하세요. 수동 페어링 코드는 다음과 같습니다.
+
+```text
+34970112332
+```
+
+Google Home이 setup PIN을 물으면 다음 값을 사용하세요.
+
+```text
+20202021
+```
+
+## 음성 트리거
+
+페어링 후 Google Home에서 보조 스위치 endpoint의 이름을 Google Assistant가 스위치로 인식할 만한 이름으로 바꾸세요. 예를 들면 다음과 같습니다.
+
+```text
+현관문 버튼
+```
+
+그 다음 이렇게 말합니다.
+
+```text
+Hey Google, 현관문 버튼 켜줘
+```
+
+서보가 열림 위치로 이동하고, 5초 대기 후 다시 잠김 위치로 돌아갑니다.
+
+## 재페어링
+
+펌웨어나 endpoint 구성을 바꾼 뒤 Google Home에 예전 장치가 계속 오프라인으로 남아 있다면, Google Home에서 기존 장치를 삭제하고 ESP32-C3의 NVS 파티션을 지우세요.
+
+```powershell
+python $env:IDF_PATH\components\esptool_py\esptool\esptool.py --chip esp32c3 -p COM10 erase_region 0x9000 0x6000
+```
+
+ESP32-C3를 재부팅한 뒤 새 Matter 기기로 다시 페어링합니다.
+
+## 안전
+
+이 프로젝트는 개발용 프로토타입입니다. 실제 문에 적용하기 전에는 수동 해제 구조, 전원 차단 시 동작, 기계적 안전성, 상태 감지, 접근 제어, Matter 인증 요구사항 등을 검토해야 합니다.
+
+## 참고 문서
+
+- [Espressif ESP-Matter Programming Guide for ESP32-C3](https://documentation.espressif.com/esp-matter/en/latest/esp32c3/index.html)
+- [Espressif ESP-Matter component registry](https://components.espressif.com/components/espressif/esp_matter)
+- [ESP-IDF LEDC for ESP32-C3](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/peripherals/ledc.html)
+- [Google Home Matter hub requirements](https://support.google.com/googlenest/answer/12391458)
