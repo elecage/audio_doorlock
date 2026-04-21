@@ -49,6 +49,61 @@ Current pulse widths:
 
 This project uses ESP-IDF v5.4.1 and the `espressif/esp_matter` managed component.
 
+## Prerequisites After Clone
+
+After cloning this repository, run the matching script for your operating system.
+The scripts install ESP-IDF v5.4.1 into the local `.espressif` directory, install
+the ESP32-C3 toolchain, export the ESP-IDF environment, and set the project target
+to `esp32c3`.
+ESP-IDF creates and uses its own Python virtual environment under
+`.espressif/tools/python_env`; the scripts verify that this venv is active after
+exporting the ESP-IDF environment.
+After that, the scripts run `idf.py reconfigure` so ESP-IDF Component Manager can
+resolve and download managed components such as `espressif/esp_matter` before the
+first build.
+
+Windows PowerShell:
+
+```powershell
+.\tools\install_prereqs_windows.ps1
+```
+
+If Git or Python is missing on Windows, allow the script to install them with
+`winget`:
+
+```powershell
+.\tools\install_prereqs_windows.ps1 -InstallApps
+```
+
+macOS:
+
+```bash
+chmod +x tools/install_prereqs_macos.sh
+./tools/install_prereqs_macos.sh
+```
+
+Linux:
+
+```bash
+chmod +x tools/install_prereqs_linux.sh
+./tools/install_prereqs_linux.sh
+```
+
+For a new terminal session after installation, export the ESP-IDF environment
+again before building:
+
+```bash
+export IDF_TOOLS_PATH="$PWD/.espressif/tools"
+. .espressif/esp-idf-v5.4.1/export.sh
+```
+
+On Windows:
+
+```powershell
+$env:IDF_TOOLS_PATH = "$PWD\.espressif\tools"
+. .\.espressif\esp-idf-v5.4.1\export.ps1
+```
+
 ```powershell
 idf.py set-target esp32c3
 idf.py build
@@ -176,6 +231,58 @@ constexpr int kMaxPulseUs = 2500;
 ## 빌드 및 업로드
 
 이 프로젝트는 ESP-IDF v5.4.1과 `espressif/esp_matter` managed component를 사용합니다.
+
+## 클론 후 사전 준비
+
+이 저장소를 클론한 뒤에는 운영체제에 맞는 설치 스크립트를 실행하세요.
+스크립트는 ESP-IDF v5.4.1을 로컬 `.espressif` 디렉터리에 설치하고,
+ESP32-C3 툴체인을 설치한 다음 ESP-IDF 환경을 export하고 프로젝트 타깃을
+`esp32c3`로 설정합니다.
+ESP-IDF는 `.espressif/tools/python_env` 아래에 전용 Python 가상환경을 만들고
+사용합니다. 설치 스크립트는 ESP-IDF 환경을 export한 뒤 이 venv가 활성화됐는지
+검증합니다.
+그 다음 `idf.py reconfigure`를 실행해서 첫 빌드 전에 ESP-IDF Component Manager가
+`espressif/esp_matter` 같은 managed component를 해석하고 다운로드하도록 합니다.
+
+Windows PowerShell:
+
+```powershell
+.\tools\install_prereqs_windows.ps1
+```
+
+Windows에서 Git 또는 Python이 없다면 `winget`으로 설치하도록 허용할 수 있습니다.
+
+```powershell
+.\tools\install_prereqs_windows.ps1 -InstallApps
+```
+
+macOS:
+
+```bash
+chmod +x tools/install_prereqs_macos.sh
+./tools/install_prereqs_macos.sh
+```
+
+Linux:
+
+```bash
+chmod +x tools/install_prereqs_linux.sh
+./tools/install_prereqs_linux.sh
+```
+
+설치 후 새 터미널을 열었다면 빌드 전에 ESP-IDF 환경을 다시 export하세요.
+
+```bash
+export IDF_TOOLS_PATH="$PWD/.espressif/tools"
+. .espressif/esp-idf-v5.4.1/export.sh
+```
+
+Windows에서는 다음과 같이 실행합니다.
+
+```powershell
+$env:IDF_TOOLS_PATH = "$PWD\.espressif\tools"
+. .\.espressif\esp-idf-v5.4.1\export.ps1
+```
 
 ```powershell
 idf.py set-target esp32c3
