@@ -2,12 +2,15 @@
 
 #include "esp_check.h"
 #include "esp_err.h"
+#include "esp_event.h"
 #include "esp_log.h"
 #include "esp_matter.h"
 #include "esp_matter_attribute.h"
 #include "esp_matter_cluster.h"
 #include "esp_matter_endpoint.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
+#include "esp_wifi_types.h"
 #include "nvs_flash.h"
 
 #include <app-common/zap-generated/ids/Attributes.h>
@@ -316,6 +319,122 @@ void app_event_cb(const ChipDeviceEvent *event, intptr_t)
     }
 }
 
+const char *wifi_disconnect_reason_to_name(uint8_t reason)
+{
+    switch (reason) {
+    case WIFI_REASON_AUTH_EXPIRE:
+        return "AUTH_EXPIRE";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        return "4WAY_HANDSHAKE_TIMEOUT";
+    case WIFI_REASON_NO_AP_FOUND:
+        return "NO_AP_FOUND";
+    case WIFI_REASON_AUTH_FAIL:
+        return "AUTH_FAIL";
+    case WIFI_REASON_ASSOC_FAIL:
+        return "ASSOC_FAIL";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        return "HANDSHAKE_TIMEOUT";
+    case WIFI_REASON_CONNECTION_FAIL:
+        return "CONNECTION_FAIL";
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        return "NO_AP_FOUND_WITH_COMPATIBLE_SECURITY";
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        return "NO_AP_FOUND_IN_AUTHMODE_THRESHOLD";
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+        return "NO_AP_FOUND_IN_RSSI_THRESHOLD";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+uint32_t hash_bytes(const uint8_t *data, size_t length)
+{
+    uint32_t hash = 2166136261UL;
+    for (size_t i = 0; i < length; ++i) {
+        hash ^= data[i];
+        hash *= 16777619UL;
+    }
+    return hash;
+}
+
+void log_current_wifi_config()
+{
+    wifi_config_t config = {};
+    esp_err_t err = esp_wifi_get_config(WIFI_IF_STA, &config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Unable to read current Wi-Fi STA config: %s", esp_err_to_name(err));
+        return;
+    }
+
+    const size_t ssid_len = strnlen(reinterpret_cast<const char *>(config.sta.ssid),
+                                    sizeof(config.sta.ssid));
+    const size_t password_len = strnlen(reinterpret_cast<const char *>(config.sta.password),
+                                        sizeof(config.sta.password));
+    const uint32_t password_hash = hash_bytes(config.sta.password, password_len);
+
+    ESP_LOGI(TAG, "Current Wi-Fi config: ssid='%.*s' ssid_len=%u password_len=%u password_hash=0x%08lx",
+             static_cast<int>(ssid_len),
+             reinterpret_cast<const char *>(config.sta.ssid),
+             static_cast<unsigned>(ssid_len),
+             static_cast<unsigned>(password_len),
+             static_cast<unsigned long>(password_hash));
+}
+
+void apply_wifi_sta_tuning()
+{
+    // Matter 장치는 부팅 직후 저장된 Wi-Fi에 자동 재접속합니다.
+    // 일부 공유기/ESP32-C3 조합에서는 기본 절전 상태나 HT40 협상 중 auth expire가 반복될 수 있어
+    // STA 동작을 보수적으로 고정합니다.
+    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ps_err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to disable Wi-Fi power save: %s", esp_err_to_name(ps_err));
+    }
+
+    esp_err_t bw_err = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+    if (bw_err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to force Wi-Fi HT20 bandwidth: %s", esp_err_to_name(bw_err));
+    }
+
+    ESP_LOGI(TAG, "Wi-Fi STA tuning applied: power_save=off bandwidth=HT20");
+}
+
+void wifi_debug_event_handler(void *, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    if (event_base != WIFI_EVENT) {
+        return;
+    }
+
+    if (event_id == WIFI_EVENT_STA_START) {
+        apply_wifi_sta_tuning();
+        return;
+    }
+
+    if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const auto *event = static_cast<wifi_event_sta_disconnected_t *>(event_data);
+        ESP_LOGW(TAG, "Wi-Fi disconnected: ssid='%.*s' bssid=%02x:%02x:%02x:%02x:%02x:%02x reason=%u (%s) rssi=%d",
+                 event->ssid_len,
+                 reinterpret_cast<const char *>(event->ssid),
+                 event->bssid[0], event->bssid[1], event->bssid[2],
+                 event->bssid[3], event->bssid[4], event->bssid[5],
+                 event->reason,
+                 wifi_disconnect_reason_to_name(event->reason),
+                 event->rssi);
+        apply_wifi_sta_tuning();
+        log_current_wifi_config();
+        return;
+    }
+
+    if (event_id == WIFI_EVENT_STA_CONNECTED) {
+        const auto *event = static_cast<wifi_event_sta_connected_t *>(event_data);
+        ESP_LOGI(TAG, "Wi-Fi connected: ssid='%.*s' channel=%u authmode=%u",
+                 event->ssid_len,
+                 reinterpret_cast<const char *>(event->ssid),
+                 event->channel,
+                 event->authmode);
+        log_current_wifi_config();
+    }
+}
+
 esp_err_t app_identification_cb(identification::callback_type_t type, uint16_t endpoint_id, uint8_t effect_id,
                                 uint8_t effect_variant, void *)
 {
@@ -475,6 +594,17 @@ extern "C" void app_main()
     // Matter stack을 시작합니다.
     // 이후 Wi-Fi commissioning, CASE session, Google Home subscription 등이 Matter stack 내부에서 동작합니다.
     ESP_ERROR_CHECK(esp_matter::start(app_event_cb));
+
+    // Matter NetworkCommissioning이 실제 Wi-Fi 접속을 시도할 때 ESP-IDF가 제공하는 상세 끊김 사유를 남깁니다.
+    // Google Home 앱에는 "액세서리를 추가할 수 없음"처럼 뭉뚱그려 보이기 때문에,
+    // 여기서 reason 값을 봐야 비밀번호/보안방식/신호/공유기 거절 중 어느 쪽인지 구분할 수 있습니다.
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+                                               &wifi_debug_event_handler, nullptr));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
+                                               &wifi_debug_event_handler, nullptr));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_START,
+                                               &wifi_debug_event_handler, nullptr));
+    apply_wifi_sta_tuning();
 
     // Matter stack 시작 직후, 아직 fabric이 없으면 commissioning window를 열도록 예약합니다.
     // 이미 Google Home에 등록된 장치라면 open_commissioning_window_if_needed()에서 아무 일도 하지 않습니다.
