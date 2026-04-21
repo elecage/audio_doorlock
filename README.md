@@ -96,6 +96,18 @@ The servo will unlock, wait 5 seconds, and lock again.
 If Google Home keeps the old device offline after firmware or endpoint changes, delete the old device in Google Home and erase the ESP32-C3 NVS partition:
 
 ```powershell
+.\tools\erase_nvs.ps1
+```
+
+The script defaults to `COM10`. To use another port:
+
+```powershell
+.\tools\erase_nvs.ps1 -Port COM7
+```
+
+Equivalent raw command:
+
+```powershell
 python $env:IDF_PATH\components\esptool_py\esptool\esptool.py --chip esp32c3 -p COM10 erase_region 0x9000 0x6000
 ```
 
@@ -210,6 +222,18 @@ Hey Google, 현관문 버튼 켜줘
 ## 재페어링
 
 펌웨어나 endpoint 구성을 바꾼 뒤 Google Home에 예전 장치가 계속 오프라인으로 남아 있다면, Google Home에서 기존 장치를 삭제하고 ESP32-C3의 NVS 파티션을 지우세요.
+
+```powershell
+.\tools\erase_nvs.ps1
+```
+
+스크립트의 기본 포트는 `COM10`입니다. 다른 포트를 쓰려면 다음처럼 실행합니다.
+
+```powershell
+.\tools\erase_nvs.ps1 -Port COM7
+```
+
+같은 동작을 하는 원본 명령은 다음과 같습니다.
 
 ```powershell
 python $env:IDF_PATH\components\esptool_py\esptool\esptool.py --chip esp32c3 -p COM10 erase_region 0x9000 0x6000
