@@ -1,31 +1,37 @@
 # ESP32-C3 Matter Servo Door Lock
 
-ESP32-C3 Super Mini를 Wi-Fi Matter 도어락 디바이스로 만들고, RC 서보모터를 PWM으로 제어해 잠금/잠금해제를 수행하는 ESP-IDF 프로젝트입니다.
+ESP-IDF project for turning an ESP32-C3 Super Mini into a Wi-Fi Matter door lock that drives an RC servo with PWM.
 
-Google Home/Nest Mini에서 Matter Door Lock으로 등록할 수 있고, Google Assistant의 도어락 음성 해제 제한을 피하기 위한 별도 On/Off 스위치 endpoint도 함께 제공합니다. 이 스위치는 켜짐 명령을 받으면 서보를 열림 위치로 이동한 뒤 5초 후 자동으로 닫힘 위치로 돌아갑니다.
+The firmware exposes two Matter endpoints:
 
-## 기능
+- A standard Door Lock endpoint for Google Home app control.
+- An auxiliary On/Off Plug-in Unit endpoint for voice-triggered opening through Google Assistant.
 
-- Matter device type: Door Lock
-- Matter hub/controller: Google Nest Mini 2세대 + Google Home
-- 음성 트리거용 추가 endpoint: On/Off Plug-in Unit
-- 서보 제어: ESP32-C3 LEDC PWM, 50 Hz
-- 서보 신호 핀: GPIO4
-- 음성 트리거 자동 재잠금: 5초
+Google Assistant/Nest Mini blocks voice unlock commands for real Door Lock devices for security reasons. The auxiliary switch can be renamed in Google Home, for example to `Front door button`, and used as a momentary open trigger. When the switch turns on, the servo moves to the unlocked position and automatically returns to the locked position after 5 seconds.
 
-## 배선
+## Hardware
 
 | RC Servo | ESP32-C3 Super Mini |
 | --- | --- |
 | Signal | GPIO4 |
-| VCC | 외부 5 V 전원 |
-| GND | 외부 전원 GND와 ESP32-C3 GND 공통 |
+| VCC | External 5 V supply |
+| GND | Common GND with ESP32-C3 |
 
-서보 전원은 ESP32-C3의 3.3 V 핀에서 직접 공급하지 않는 것을 권장합니다. SG90 같은 소형 서보도 순간 전류가 커서 보드가 리셋될 수 있습니다.
+Do not power the servo directly from the ESP32-C3 3.3 V pin. Even small servos such as SG90 can draw enough peak current to reset the board.
 
-## 서보 각도 보정
+## Features
 
-[main/servo_lock.cpp](main/servo_lock.cpp)에서 실제 문고리/잠금장치에 맞게 아래 값을 조정합니다.
+- Target: ESP32-C3
+- Matter device type: Door Lock
+- Auxiliary voice trigger: On/Off Plug-in Unit
+- Matter hub tested with: Google Nest Mini 2nd generation + Google Home
+- Servo PWM: LEDC low-speed mode, 50 Hz
+- Servo signal pin: GPIO4
+- Auto-relock delay for voice trigger: 5 seconds
+
+## Servo Calibration
+
+Adjust these values in [main/servo_lock.cpp](main/servo_lock.cpp) for your lock mechanism:
 
 ```cpp
 constexpr int kLockedAngle = 15;
@@ -34,17 +40,14 @@ constexpr int kMinPulseUs = 500;
 constexpr int kMaxPulseUs = 2500;
 ```
 
-현재 PWM 설정은 다음과 같습니다.
+Current pulse widths:
 
-- GPIO: GPIO4
-- Frequency: 50 Hz
-- Duty resolution: 14-bit
-- Locked pulse: 약 666 us
-- Unlocked pulse: 약 1666 us
+- Locked: about 666 us
+- Unlocked: about 1666 us
 
-## 빌드
+## Build and Flash
 
-ESP-IDF v5.4.1과 ESP-Matter component를 사용합니다.
+This project uses ESP-IDF v5.4.1 and the `espressif/esp_matter` managed component.
 
 ```powershell
 idf.py set-target esp32c3
@@ -52,51 +55,57 @@ idf.py build
 idf.py -p COM10 flash monitor
 ```
 
-프로젝트는 `idf_component.yml`을 통해 `espressif/esp_matter` dependency를 받습니다.
+## Google Home Pairing
 
-## Google Home 등록
+After a fresh flash or NVS erase, the device opens a Matter commissioning window and advertises over BLE as:
 
-처음 부팅하거나 NVS를 지운 뒤에는 commissioning window가 열리고 BLE 이름 `MATTER-3840`으로 광고됩니다.
+```text
+MATTER-3840
+```
 
-Google Home 앱에서 Matter 기기를 추가하고, 수동 코드를 입력합니다.
+Use Google Home to add a new Matter device. Manual pairing code:
 
 ```text
 34970112332
 ```
 
-PIN을 직접 물으면 다음 값을 사용합니다.
+If Google Home asks for a setup PIN:
 
 ```text
 20202021
 ```
 
-## Google Assistant 음성 제어
+## Voice Trigger
 
-Google Assistant/Nest Mini는 보안 정책상 Door Lock의 음성 잠금해제를 차단합니다. 그래서 이 펌웨어는 도어락 endpoint와 별도로 음성 트리거용 On/Off 스위치 endpoint를 추가합니다.
-
-Google Home 앱에서 새 스위치 이름을 예를 들어 `현관문 버튼`처럼 바꾼 뒤 다음처럼 사용할 수 있습니다.
+After pairing, rename the auxiliary switch endpoint in Google Home to a phrase that Google Assistant will treat as a switch, for example:
 
 ```text
-Hey Google, 현관문 버튼 켜줘
+Front door button
 ```
 
-스위치가 켜지면 서보가 열림 위치로 이동하고, 5초 뒤 자동으로 닫힘 위치로 돌아갑니다.
+Then say:
 
-## 재페어링
+```text
+Hey Google, turn on Front door button
+```
 
-Google Home에 장치가 오프라인으로 남거나 endpoint 구성이 꼬이면 기존 장치를 Google Home에서 삭제하고 ESP32-C3의 NVS 영역을 지운 뒤 다시 페어링합니다.
+The servo will unlock, wait 5 seconds, and lock again.
+
+## Re-pairing
+
+If Google Home keeps the old device offline after firmware or endpoint changes, delete the old device in Google Home and erase the ESP32-C3 NVS partition:
 
 ```powershell
 python $env:IDF_PATH\components\esptool_py\esptool\esptool.py --chip esp32c3 -p COM10 erase_region 0x9000 0x6000
 ```
 
-그 후 장치를 재부팅하고 Google Home에서 새 Matter 기기로 등록합니다.
+Reboot the ESP32-C3 and pair it again as a new Matter device.
 
-## 안전 참고
+## Safety
 
-이 프로젝트는 개발/실험용 예제입니다. 실제 현관문에 적용하려면 수동 해제 구조, 전원 장애 대응, 물리적 안전성, 상태 센서, 인증/인터락, Matter 인증 요구사항을 별도로 검토해야 합니다.
+This is a development prototype. Before using it on a real door, review manual override, power-loss behavior, mechanical safety, state sensing, access control, and any Matter certification requirements.
 
-## 참고 문서
+## References
 
 - [Espressif ESP-Matter Programming Guide for ESP32-C3](https://documentation.espressif.com/esp-matter/en/latest/esp32c3/index.html)
 - [Espressif ESP-Matter component registry](https://components.espressif.com/components/espressif/esp_matter)
