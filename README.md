@@ -26,6 +26,7 @@ Google Assistant/Nest Mini blocks voice unlock commands for real Door Lock devic
 Do not power the servo directly from the ESP32-C3 3.3 V pin. Even small servos such as SG90 can draw enough peak current to reset the board.
 The battery monitor assumes a 1-cell Li-ion/LiPo battery and a 1:1 voltage divider. Adjust the constants in [main/battery_monitor.cpp](main/battery_monitor.cpp) if you use a different battery pack, ADC pin, or resistor ratio.
 
+![](https://github.com/elecage/audio_doorlock/blob/main/img/audio_doorlock.png)
 ## Features
 
 - Target: ESP32-C3
